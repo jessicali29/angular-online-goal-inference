@@ -1,1 +1,7 @@
-<p>data-collection works!</p>
+<div *ngIf="currentTrial < totalTrials">
+    <app-trial 
+      [trialNumber]="currentTrial" 
+      (trialCompleted)="handleTrialCompletion($event)">
+    </app-trial>
+</div>
+  

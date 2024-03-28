@@ -1,0 +1,3 @@
+<app-fixation *ngIf="phase === 'Fixation'"></app-fixation>
+<app-reaching *ngIf="phase === 'Reaching'" [trialNumber]="trialNumber" (reachingFinished)="showFeedback($event)"></app-reaching>
+<app-feedback *ngIf="phase === 'Feedback'" [duration]="duration"></app-feedback>

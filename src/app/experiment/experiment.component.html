@@ -1,1 +1,9 @@
-<p>experiment works!</p>
+<div *ngIf="!experimentStarted">
+    <h1>Welcome to the Experiment!</h1>
+    <button (click)="startExperiment()">Start</button>
+</div>
+  
+  <!-- The router-outlet is only added to the DOM if the experiment has started -->
+<div *ngIf="experimentStarted">
+    <router-outlet></router-outlet>
+</div> 

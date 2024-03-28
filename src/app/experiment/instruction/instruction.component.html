@@ -1,1 +1,10 @@
-<p>instruction works!</p>
+<div *ngIf="currentPage >= 0 && currentPage < instructions.length">
+    <p>{{ instructions[currentPage] }}</p>
+    
+    <button *ngIf="currentPage > 0" (click)="previousPage()">Previous</button>
+    <!-- Show the Next button only if it's not the last page -->
+    <button *ngIf="currentPage < instructions.length - 1" (click)="nextPage()">Next</button>
+    <!-- Optionally, navigate to the next section or show a Finish button on the last page -->
+    <button *ngIf="currentPage === instructions.length - 1" (click)="nextSection()">Finish</button>
+</div>
+  
