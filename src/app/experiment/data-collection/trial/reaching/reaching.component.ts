@@ -1,103 +1,199 @@
-import { Component, Input, Output, EventEmitter,
-   ElementRef, ViewChild, SimpleChanges, AfterViewInit, OnDestroy} from '@angular/core';
-
-
-type Shape = 'circle' | 'square'; // Extend with more shapes as needed
-type Color = 'red' | 'blue' | 'green' | 'purple'; // Define allowable colors
-
-class Item {
-  x: number;
-  y: number;
-  size: number;
-  shape: Shape;
-  color: Color;
-
-  constructor(x: number, y: number, size: number, shape: Shape, color: Color) {
-    this.x = x;
-    this.y = y;
-    this.size = size;
-    this.shape = shape;
-    this.color = color;
-  }
-
-  isHovered(mouseX: number, mouseY: number): boolean {
-    const distance = Math.sqrt((mouseX - this.x) ** 2 + (mouseY - this.y) ** 2);
-    return distance < this.size / 2; // Assuming size as diameter for circles
-  }
-
-  render(ctx: CanvasRenderingContext2D, isHovered: boolean, isClicked: boolean): void {
-    ctx.fillStyle = this.color;
-    const finalSize = isHovered ? this.size * 1.3 : this.size;
-
-    switch (this.shape) {
-      case 'circle':
-        ctx.beginPath();
-        ctx.arc(this.x, this.y, finalSize / 2, 0, Math.PI * 2);
-        ctx.fill();
-        break;
-      case 'square':
-        ctx.fillRect(this.x - finalSize / 2, this.y - finalSize / 2, finalSize, finalSize);
-        break;
-      // No need for default case if all shapes are covered
-    }
-
-    if (isClicked) {
-      ctx.fillStyle = 'black'; // This could also be a type if you extend Color type
-      ctx.beginPath();
-      ctx.arc(this.x, this.y, 5, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-}
-
+import { Component, ElementRef, Input, OnInit, ViewChild, Output, EventEmitter } from '@angular/core';
+import { fromEvent } from 'rxjs';
+import { io, Socket } from 'socket.io-client';
+import { map, filter, pluck, scan, withLatestFrom } from 'rxjs/operators';
+import { GameService } from '../services/game.service'; // Adjust the path
 @Component({
   selector: 'app-reaching',
   templateUrl: './reaching.component.html',
-  styleUrl: './reaching.component.css'
+  styleUrls: ['./reaching.component.css']
 })
+export class ReachingComponent implements OnInit {
+  @ViewChild('gameCanvas', { static: true }) gameCanvas!: ElementRef<HTMLCanvasElement>;
+  @ViewChild('clickMe', { static: true }) clickMe!: ElementRef<HTMLButtonElement>;
+  @Input() trialNumber: number = 0;
+  @Output() reachingFinished = new EventEmitter<void>();
 
-export class ReachingComponent implements AfterViewInit, OnDestroy {
-  @Input() trialNumber!: number;
-  @Output() reachingFinished = new EventEmitter<number>();
-  @ViewChild('canvas', { static: true }) canvas!: ElementRef<HTMLCanvasElement>;
   private ctx!: CanvasRenderingContext2D;
-  private items!: Item[];
-  startTime: number = Date.now();
+  private gridNumber = 10;
+  private cellSize!: number;
+  private playerStartingPosition = { x: 0, y: 0 };
+  private currentPlayerPosition = this.playerStartingPosition;
+  private socket!: Socket;
+  private goals: any[] = [];
+  private blocks: any[] = [];
+  private policy: any;
 
-  constructor() {}
+  constructor(private gameService: GameService) {}
 
-  ngAfterViewInit(): void {
-    this.ctx = this.canvas.nativeElement.getContext('2d')!;
-    this.setupNewItems(); // Initial setup if needed
-    this.renderItems();
+  // figure out whether this gets called every trial or just once 
+  // figure out when things get destroyed 
+  // socket connection should not get destroyed
+  // reorganize the directory, move things that we don't want to destroy into another component 
+  // figure out whatever is trial-specific, and then recycle things
+  // prioritize figuring out carry-over effects 
+  // solve things step by step, get rid of socket first
+  // place things outside ngOnInit (especially socket)
+  // ngOnChange, ngOnExit, and some other functions, see how these functions work in terms of life cycle 
+  // use break points 
+  // everything is in the ngOnInit, which might cause carry-over effect
+
+  ngOnInit() {
+    const canvasElement = this.gameCanvas.nativeElement;
+    this.ctx = canvasElement.getContext('2d')!;
+    this.cellSize = canvasElement.width / this.gridNumber;
+    this.socket = io('http://localhost:3000');
+
+    fromEvent(this.clickMe.nativeElement, 'click').subscribe(() => {
+      this.socket.emit('playerReady', 'Player is ready!');
+    });
+
+    this.socket.on('initializeGame', (game_map: any) => {
+      this.initializeGame(game_map);
+    });
+
+    this.socket.on('updatePosterior', (posterior: any) => {
+      this.updateGoalColors(posterior);
+      this.render(this.currentPlayerPosition);
+    });
+
+    const movement$ = fromEvent<KeyboardEvent>(document, 'keydown').pipe(
+      pluck('code'),
+      filter((code: string) => ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(code)),
+      map((code: string) => {
+        switch (code) {
+          case 'ArrowLeft': return { x: -1, y: 0 };
+          case 'ArrowRight': return { x: 1, y: 0 };
+          case 'ArrowUp': return { x: 0, y: -1 };
+          case 'ArrowDown': return { x: 0, y: 1 };
+          default: return { x: 0, y: 0 };
+        }
+      })
+    );
+
+    const updatePlayerPos$ = movement$.pipe(
+      scan((playerPosition, movement) => {
+        let newPosition = {
+          x: Math.max(0, Math.min(this.gridNumber - 1, playerPosition.x + movement.x)),
+          y: Math.max(0, Math.min(this.gridNumber - 1, playerPosition.y + movement.y))
+        };
+
+        let isCollision = this.blocks.some(block => block.x === newPosition.x && block.y === newPosition.y);
+
+        if (isCollision) {
+          newPosition = playerPosition;
+        }
+
+        return newPosition;
+      }, this.playerStartingPosition)
+    );
+
+    const action_position$ = movement$.pipe(
+      withLatestFrom(updatePlayerPos$),
+      map(([action, newPosition]) => ({
+        action: { x: action.x, y: action.y },
+        position: newPosition
+      }))
+    );
+
+    action_position$.subscribe(({ action, position }) => {
+      this.currentPlayerPosition = position;
+      this.render(position);
+      if (this.isReached(position, this.goals)) {
+        alert('Congratulations! You reached the goal! Click the Start Game button again to proceed to the next trial');
+        this.clearMap();
+        this.reachingFinished.emit();
+        this.goals.length = 0;
+        this.blocks.length = 0;
+      }
+      this.gameService.updateGame([position.x, position.y], [action.x, action.y], this.policy).subscribe(response => {
+        // Handle response if necessary
+      });
+    });
   }
 
-  ngOnDestroy(): void {
-    console.log("destroying");
+  initializeGame(game_map: any) {
+    this.clearMap();
+    this.goals = game_map.goals.map((goal: any) => ({
+      x: goal[0], y: goal[1], color: this.getDefaultColor(), opacity: 1
+    }));
+    this.blocks = game_map.blocks.map((block: any) => ({
+      x: block[0], y: block[1]
+    }));
+    this.currentPlayerPosition = this.playerStartingPosition;
+    this.render(this.currentPlayerPosition);
+    
+    // Call the Python server to initialize the game
+    this.gameService.initializeGame(game_map, this.currentPlayerPosition, 0.9, 0.1).subscribe(response => {
+      this.policy = response.policy;
+    });
   }
 
-  setupNewItems(): void {
-    this.items = [
-      new Item(100, 100, 30, 'circle', this.getRandomColor()),
-      new Item(200, 100, 40, 'square', this.getRandomColor()),
-      new Item(300, 150, 50, 'circle', this.getRandomColor()),
-      new Item(400, 200, 60, 'square', this.getRandomColor()),
-    ];
+  drawMap() {
+    for (let i = 0; i < this.gridNumber * this.gridNumber; i++) {
+      const x = (i % this.gridNumber) * this.cellSize;
+      const y = Math.floor(i / this.gridNumber) * this.cellSize;
+      this.ctx.strokeRect(x, y, this.cellSize, this.cellSize);
+    }
   }
 
-  renderItems(): void {
-    this.ctx.clearRect(0, 0, this.canvas.nativeElement.width, this.canvas.nativeElement.height); // Clear canvas
-    this.items.forEach(item => item.render(this.ctx, false, false));
+  drawBlocks(blocks: any[]) {
+    blocks.forEach(block => {
+      this.ctx.fillStyle = 'brown';
+      this.ctx.globalAlpha = 1;
+      this.ctx.fillRect(block.x * this.cellSize, block.y * this.cellSize, this.cellSize, this.cellSize);
+    });
   }
 
-  getRandomColor(): Color {
-    const colors: Color[] = ['red', 'blue', 'green', 'purple'];
-    return colors[Math.floor(Math.random() * colors.length)];
+  getRandomColor() {
+    const red = Math.floor(Math.random() * 256);
+    const green = Math.floor(Math.random() * 256);
+    const blue = Math.floor(Math.random() * 256);
+    return `rgb(${red}, ${green}, ${blue})`;
   }
 
-  finishReaching(): void {
-    const endTime = Date.now();
-    const duration = endTime - this.startTime; // Calculate duration
-    this.reachingFinished.emit(duration); // Emit the duration
+  getDefaultColor() {
+    const red = 50;
+    const green = 10;
+    const blue = 0;
+    return `rgb(${red}, ${green}, ${blue})`;
+  }
+
+  drawPlayer(playerPosition: { x: number, y: number }) {
+    this.ctx.beginPath();
+    this.ctx.fillStyle = 'blue';
+    this.ctx.arc(playerPosition.x * this.cellSize + (this.cellSize / 2), playerPosition.y * this.cellSize + (this.cellSize / 2), this.cellSize / 2, 0, Math.PI * 2);
+    this.ctx.fill();
+  }
+
+  drawGoals(goals: any[]) {
+    goals.forEach(goal => {
+      this.ctx.fillStyle = goal.color;
+      this.ctx.globalAlpha = 1;
+      this.ctx.fillRect(goal.x * this.cellSize, goal.y * this.cellSize, this.cellSize, this.cellSize);
+    });
+    this.ctx.globalAlpha = 1;
+  }
+
+  isReached(playerPosition: { x: number, y: number }, goals: any[]) {
+    return goals.some(goal => goal.x === playerPosition.x && goal.y === playerPosition.y);
+  }
+
+  clearMap() {
+    this.ctx.clearRect(0, 0, this.gameCanvas.nativeElement.width, this.gameCanvas.nativeElement.height);
+    this.drawMap();
+  }
+
+  render(playerPosition: { x: number, y: number }) {
+    this.clearMap();
+    this.drawPlayer(playerPosition);
+    this.drawGoals(this.goals);
+    this.drawBlocks(this.blocks);
+  }
+
+  updateGoalColors(posterior: any) {
+    this.goals[0].color = `rgb(${Math.floor(posterior.G1 * 255)}, 0, 0)`;
+    this.goals[1].color = `rgb(${Math.floor(posterior.G2 * 255)}, 0, 0)`;
+    this.goals[2].color = `rgb(${Math.floor(posterior.G3 * 255)}, 0, 0)`;
   }
 }
