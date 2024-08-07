@@ -36,8 +36,7 @@ export class TrialComponent implements OnChanges {
       });
   }
 
-  showFeedback(reachingTime:number): void {
-    this.duration = reachingTime;
+  showFeedback(): void {
     this.phase = 'Feedback';
     console.log(this.duration);
     // Feedback phase lasts 1 second before completing the trial
